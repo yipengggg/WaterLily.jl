@@ -1,21 +1,23 @@
-@inline ∂(a,I::CartesianIndex{d},f::AbstractArray{T,d}) where {T,d} = @inbounds f[I]-f[I-δ(a,I)]
-@inline ∂(a,I::CartesianIndex{m},u::AbstractArray{T,n}) where {T,n,m} = @inbounds u[I+δ(a,I),a]-u[I,a]
-@inline ϕ(a,I,f) = @inbounds (f[I]+f[I-δ(a,I)])*0.5
-@fastmath quick(u,c,d) = median((5c+2d-u)/6,c,median(10c-9u,c,d))
-@fastmath vanLeer(u,c,d) = (c≤min(u,d) || c≥max(u,d)) ? c : c+(d-c)*(c-u)/(d-u)
-@inline ϕu(a,I,f,u,λ=quick) = @inbounds u>0 ? u*λ(f[I-2δ(a,I)],f[I-δ(a,I)],f[I]) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])
-@inline ϕuP(a,Ip,I,f,u,λ=quick) = @inbounds u>0 ? u*λ(f[Ip],f[I-δ(a,I)],f[I]) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])
-@inline ϕuL(a,I,f,u,λ=quick) = @inbounds u>0 ? u*ϕ(a,I,f) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])
-@inline ϕuR(a,I,f,u,λ=quick) = @inbounds u<0 ? u*ϕ(a,I,f) : u*λ(f[I-2δ(a,I)],f[I-δ(a,I)],f[I])
+@inline ∂(a,I::CartesianIndex{d},f::AbstractArray{T,d}) where {T,d} = @inbounds f[I]-f[I-δ(a,I)]        #对于标量场的任意位置的任意方向的梯度计算，标量场可以是：密度，质量，温度，浓度等
+@inline ∂(a,I::CartesianIndex{m},u::AbstractArray{T,n}) where {T,n,m} = @inbounds u[I+δ(a,I),a]-u[I,a]  #对于速度场的任意位置的任意方向的梯度计算
+@inline ϕ(a,I,f) = @inbounds (f[I]+f[I-δ(a,I)])*0.5                                #一种插值方法，用于给扩散项插值，与旁边的点取均值，来求扩散标量的变化
+@fastmath quick(u,c,d) = median((5c+2d-u)/6,c,median(10c-9u,c,d))                  #一种插值方法，用于给对流项插值，表示二阶插值，f_i-2,f_i-1,f_i之间的关系，二阶插值相比一阶插值会提高精度，但是导致数据不稳定（振荡）
+@fastmath vanLeer(u,c,d) = (c≤min(u,d) || c≥max(u,d)) ? c : c+(d-c)*(c-u)/(d-u)    #一种插值方法，用于给对流项插值，避免数据振荡，即数据上下波动
+@inline ϕu(a,I,f,u,λ=quick) = @inbounds u>0 ? u*λ(f[I-2δ(a,I)],f[I-δ(a,I)],f[I]) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)]) # 对流通量表示为flux：J， J的计算为 ϕ乘u，这里是通过标量和速度相乘来表示 通量
+#计算 对流 通量，基于速度u和物理量phi,phi通过插值方式获得       当速度大于0，用后边的表达式表示标量，相乘得到通量               当速度小于0，用后边的表达式表示标量，相乘得到通量 
+@inline ϕuP(a,Ip,I,f,u,λ=quick) = @inbounds u>0 ? u*λ(f[Ip],f[I-δ(a,I)],f[I]) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])  #当确定为周期性边界条件时，使用这个函数来计算周期边界的对流通量flux
+@inline ϕuL(a,I,f,u,λ=quick) = @inbounds u>0 ? u*ϕ(a,I,f) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])   #处理常规情况下左侧边界的对流通量flux计算
+@inline ϕuR(a,I,f,u,λ=quick) = @inbounds u<0 ? u*ϕ(a,I,f) : u*λ(f[I-2δ(a,I)],f[I-δ(a,I)],f[I])  ##处理常规情况下右侧边界的对流通量flux计算
 
-@fastmath @inline function div(I::CartesianIndex{m},u) where {m}
-    init=zero(eltype(u))
-    for i in 1:m
+@fastmath @inline function div(I::CartesianIndex{m},u) where {m}                    #对任一位置标量的散度计算
+    init=zero(eltype(u))                                                            #对任意位置上的点的标量，进行方向上的遍历，然后将不同方向的梯度进行累加，返回的init就是 divergence
+    for i in 1:m                        
      init += @inbounds ∂(i,I,u)
     end
     return init
 end
-@fastmath @inline function μddn(I::CartesianIndex{np1},μ,f) where np1
+
+@fastmath @inline function μddn(I::CartesianIndex{np1},μ,f) where np1              #计算任意三个数的中间值，之后的插值计算会用到
     s = zero(eltype(f))
     for j ∈ 1:np1-1
         s+= @inbounds μ[I,j]*(f[I+δ(j,I)]-f[I-δ(j,I)])
@@ -33,29 +35,30 @@ function median(a,b,c)
     return a
 end
 
-function conv_diff!(r,u,Φ;ν=0.1,perdir=())
-    r .= 0.
-    N,n = size_u(u)
-    for i ∈ 1:n, j ∈ 1:n
+function conv_diff!(r,u,Φ;ν=0.1,perdir=())                                         #计算标量在模拟网格中从初始网格向外扩张的物理过程，如浓度的扩散，温度的传递，流畅内速度分类的传递
+    r .= 0.                                                                        #输出数组，在这里表示对应网格内所有位置的通量flux
+    N,n = size_u(u)                                                                #定义标量场的网格尺寸信心
+    for i ∈ 1:n, j ∈ 1:n                                                         #i的循环表示速度的不同分量：u,v,w, j的循环表示对不同速度分量进行通量计算x,y,z方向，这个通量为不同方向上的
         # if it is periodic direction
-        tagper = (j in perdir)
+        tagper = (j in perdir)                                                     #判断j所代表的x,y,z方向是否为周期性方向，是则tagper = true, 不是则tapger = false
         # treatment for bottom boundary with BCs
-        lowerBoundary!(r,u,Φ,ν,i,j,N,Val{tagper}())
+        lowerBoundary!(r,u,Φ,ν,i,j,N,Val{tagper}())                                #根据tapger的值，对下边界用neumann边界还是周期性边界进行判断，即流入边界
         # inner cells
-        @loop (Φ[I] = ϕu(j,CI(I,i),u,ϕ(i,CI(I,j),u)) - ν*∂(j,CI(I,i),u);
-               r[I,i] += Φ[I]) over I ∈ inside_u(N,j)
-        @loop r[I-δ(j,I),i] -= Φ[I] over I ∈ inside_u(N,j)
+        @loop (Φ[I] = ϕu(j,CI(I,i),u,ϕ(i,CI(I,j),u)) - ν*∂(j,CI(I,i),u);           #计算I点的通量
+               #I点储存的通量         #计算对流通量                    #计算扩散通量
+               r[I,i] += Φ[I]) over I ∈ inside_u(N,j)                             #将通量的矢量和记录到r的对应位置
+        @loop r[I-δ(j,I),i] -= Φ[I] over I ∈ inside_u(N,j)                        #确保通量守恒，通量是从一个格子流入到周围格子的，如果在j方向上上一行代码在I出j方向上加入通量Φ，那么在I沿j方向倒退一步的地方要减去通量Φ，确保通量守恒
         # treatment for upper boundary with BCs
-        upperBoundary!(r,u,Φ,ν,i,j,N,Val{tagper}())
+        upperBoundary!(r,u,Φ,ν,i,j,N,Val{tagper}())                                 #根据tapger的值，对上边界用neumann边界还是周期性边界进行判断，即流出边界
     end
 end
 
-# Neumann BC Building block
+# Neumann BC Building block                                                         # Neumann边界条件表示边界没渗出
 lowerBoundary!(r,u,Φ,ν,i,j,N,::Val{false}) = @loop r[I,i] += ϕuL(j,CI(I,i),u,ϕ(i,CI(I,j),u)) - ν*∂(j,CI(I,i),u) over I ∈ slice(N,2,j,2)
 upperBoundary!(r,u,Φ,ν,i,j,N,::Val{false}) = @loop r[I-δ(j,I),i] += -ϕuR(j,CI(I,i),u,ϕ(i,CI(I,j),u)) + ν*∂(j,CI(I,i),u) over I ∈ slice(N,N[j],j,2)
 
 # Periodic BC Building block
-lowerBoundary!(r,u,Φ,ν,i,j,N,::Val{true}) = @loop (
+lowerBoundary!(r,u,Φ,ν,i,j,N,::Val{true}) = @loop (                                 # 周期条件表示上边界速度等于下边界速度
     Φ[I] = ϕuP(j,CIj(j,CI(I,i),N[j]-2),CI(I,i),u,ϕ(i,CI(I,j),u)) -ν*∂(j,CI(I,i),u); r[I,i] += Φ[I]) over I ∈ slice(N,2,j,2)
 upperBoundary!(r,u,Φ,ν,i,j,N,::Val{true}) = @loop r[I-δ(j,I),i] -= Φ[CIj(j,I,2)] over I ∈ slice(N,N[j],j,2)
 
