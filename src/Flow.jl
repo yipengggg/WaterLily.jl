@@ -9,6 +9,8 @@
 @inline ϕuL(a,I,f,u,λ=quick) = @inbounds u>0 ? u*ϕ(a,I,f) : u*λ(f[I+δ(a,I)],f[I],f[I-δ(a,I)])   #处理常规情况下左侧边界的对流通量flux计算
 @inline ϕuR(a,I,f,u,λ=quick) = @inbounds u<0 ? u*ϕ(a,I,f) : u*λ(f[I-2δ(a,I)],f[I-δ(a,I)],f[I])  ##处理常规情况下右侧边界的对流通量flux计算
 
+#在julia里定义变量的方式类似于fortran，在一个字母后边施加四个点 :: 来解释前边这个字符的含义
+
 @fastmath @inline function div(I::CartesianIndex{m},u) where {m}                    #对任一位置标量的散度计算
     init=zero(eltype(u))                                                            #对任意位置上的点的标量，进行方向上的遍历，然后将不同方向的梯度进行累加，返回的init就是 divergence
     for i in 1:m                        
@@ -36,7 +38,7 @@ function median(a,b,c)
 end
 
 function conv_diff!(r,u,Φ;ν=0.1,perdir=())                                         #计算标量在模拟网格中从初始网格向外扩张的物理过程，如浓度的扩散，温度的传递，流畅内速度分类的传递
-    r .= 0.                                                                        #输出数组，在这里表示对应网格内所有位置的通量flux
+    r .= 0.                                                                        #输出数组，在这里表示对应网格内所有位置的通量flux，这里的r表示的是综合通量变量，不仅仅有对流和扩散项，在下边还会有各种加速度带来的效果
     N,n = size_u(u)                                                                #定义标量场的网格尺寸信心
     for i ∈ 1:n, j ∈ 1:n                                                         #i的循环表示速度的不同分量：u,v,w, j的循环表示对不同速度分量进行通量计算x,y,z方向，这个通量为不同方向上的
         # if it is periodic direction
@@ -62,25 +64,26 @@ lowerBoundary!(r,u,Φ,ν,i,j,N,::Val{true}) = @loop (                           
     Φ[I] = ϕuP(j,CIj(j,CI(I,i),N[j]-2),CI(I,i),u,ϕ(i,CI(I,j),u)) -ν*∂(j,CI(I,i),u); r[I,i] += Φ[I]) over I ∈ slice(N,2,j,2)
 upperBoundary!(r,u,Φ,ν,i,j,N,::Val{true}) = @loop r[I-δ(j,I),i] -= Φ[CIj(j,I,2)] over I ∈ slice(N,N[j],j,2)
 
-using EllipsisNotation
+using EllipsisNotation                                                                                       #一个 Julia 包，它主要用于高效和简洁地操作多维数组，允许你使用 .. 来表示“所有其他维度” 例如: A[:, :, :, k]
+
 """
     accelerate!(r,dt,g)
 
-Add a uniform acceleration `gᵢ+dUᵢ/dt` at time `t=sum(dt)` to field `r`.
+Add a uniform acceleration `gᵢ+dUᵢ/dt` at time `t=sum(dt)` to field `r`.                                          #添加一个多情况函数，表示不同情况下的加速度作用，并将其效果添加到输入数组r
 """
-accelerate!(r,dt,g::Function,::Tuple,t=sum(dt)) = for i ∈ 1:last(size(r))
+accelerate!(r,dt,g::Function,::Tuple,t=sum(dt)) = for i ∈ 1:last(size(r))                                         #这个情况下的g是被直接定义的函数，将这个直接定义的函数的效果叠加到r上
     r[..,i] .+= g(i,t)
 end
-accelerate!(r,dt,g::Nothing,U::Function) = accelerate!(r,dt,(i,t)->ForwardDiff.derivative(τ->U(i,τ),t),())
-accelerate!(r,dt,g::Function,U::Function) = accelerate!(r,dt,(i,t)->g(i,t)+ForwardDiff.derivative(τ->U(i,τ),t),())
-accelerate!(r,dt,::Nothing,::Tuple) = nothing
+accelerate!(r,dt,g::Nothing,U::Function) = accelerate!(r,dt,(i,t)->ForwardDiff.derivative(τ->U(i,τ),t),())        #这个情况下g不存在，即没有直接定义的加速度函数，而有速度场函数，所以通过对速度场函数求导，然后将加速度加入r
+accelerate!(r,dt,g::Function,U::Function) = accelerate!(r,dt,(i,t)->g(i,t)+ForwardDiff.derivative(τ->U(i,τ),t),())#同时存在g和u，则在每一个点将所有g和u的导数的效果同时叠加
+accelerate!(r,dt,::Nothing,::Tuple) = nothing                                                                     #没有任何的加速度和速度场的情况下，则r直接就是conv-diff的结果，不施加任何额外的操作
 """
     BCTuple(U,dt,N)
 
 Return BC tuple `U(i∈1:N, t=sum(dt))`.
 """
-BCTuple(f::Function,dt,N,t=sum(dt))=ntuple(i->f(i,t),N)
-BCTuple(f::Tuple,dt,N)=f
+BCTuple(f::Function,dt,N,t=sum(dt))=ntuple(i->f(i,t),N)                                                           #用来计算边界的值并生产一个tuple，边界上flux的值，在我们的情况下
+BCTuple(f::Tuple,dt,N)=f                                                                                          #如果已经有了f为定值，则直接用
 
 """
     Flow{D::Int, T::Float, Sf<:AbstractArray{T,D}, Vf<:AbstractArray{T,D+1}, Tf<:AbstractArray{T,D+2}}
@@ -93,16 +96,17 @@ The primary variables are the scalar pressure `p` (an array of dimension `D`)
 and the velocity vector field `u` (an array of dimension `D+1`).
 """
 struct Flow{D, T, Sf<:AbstractArray{T}, Vf<:AbstractArray{T}, Tf<:AbstractArray{T}}
+#定义参数类型：D，空间维度，T，数据精度，sf，压力场标量， vf，速度矢量场， tf，张量场
     # Fluid fields
-    u :: Vf # velocity vector field
-    u⁰:: Vf # previous velocity
+    u :: Vf # velocity vector field 当前速度场
+    u⁰:: Vf # previous velocity     之前速度场
     f :: Vf # force vector
     p :: Sf # pressure scalar field
-    σ :: Sf # divergence scalar
-    # BDIM fields
+    σ :: Sf # divergence scalar。  用来强制不可压缩，（使得散度为零）
+    # BDIM fields                用来处理流体和固体边界交互的情况
     V :: Vf # body velocity vector
-    μ₀:: Vf # zeroth-moment vector
-    μ₁:: Tf # first-moment tensor field
+    μ₀:: Vf # zeroth-moment vector。  描述边界的体积效应，如密度和质量
+    μ₁:: Tf # first-moment tensor field。描述边界的动量效应，如力和速度的分布
     # Non-fields
     U :: Union{NTuple{D,Number},Function} # domain boundary values
     Δt:: Vector{T} # time step (stored in CPU memory)
@@ -131,14 +135,14 @@ Current flow time.
 """
 time(a::Flow) = sum(@view(a.Δt[1:end-1]))
 
-function BDIM!(a::Flow)
+function BDIM!(a::Flow)                    #更新流体和固体交互边界的速度场
     dt = a.Δt[end]
-    @loop a.f[Ii] = a.u⁰[Ii]+dt*a.f[Ii]-a.V[Ii] over Ii in CartesianIndices(a.f)
-    @loop a.u[Ii] += μddn(Ii,a.μ₁,a.f)+a.V[Ii]+a.μ₀[Ii]*a.f[Ii] over Ii ∈ inside_u(size(a.p))
+    @loop a.f[Ii] = a.u⁰[Ii]+dt*a.f[Ii]-a.V[Ii] over Ii in CartesianIndices(a.f)                        #第一个循环，根据 历史速度 和 固体边界影响，修正力场
+    @loop a.u[Ii] += μddn(Ii,a.μ₁,a.f)+a.V[Ii]+a.μ₀[Ii]*a.f[Ii] over Ii ∈ inside_u(size(a.p))           #第二个循环, 根据 修正力场， 更新流体速度场
 end
 
-function project!(a::Flow{n},b::AbstractPoisson,w=1) where n
-    dt = w*a.Δt[end]
+function project!(a::Flow{n},b::AbstractPoisson,w=1) where n                        #压力修正，压力柏松方程的求解， 柏松方程即用ns方程求解速度和压强的关系，然后对压强求积分，得到速度和力的关系
+    dt = w*a.Δt[end]                                                                #确保速度场imcompressible
     @inside b.z[I] = div(I,a.u); b.x .*= dt # set source term & solution IC
     solver!(b)
     for i ∈ 1:n  # apply solution and unscale to recover pressure
@@ -153,7 +157,7 @@ end
 Integrate the `Flow` one time step using the [Boundary Data Immersion Method](https://eprints.soton.ac.uk/369635/)
 and the `AbstractPoisson` pressure solver to project the velocity onto an incompressible flow.
 """
-@fastmath function mom_step!(a::Flow{N},b::AbstractPoisson) where N
+@fastmath function mom_step!(a::Flow{N},b::AbstractPoisson) where N            #分布逼近真实解， 预测阶段估算粗略值，矫正阶段计算精确值
     a.u⁰ .= a.u; scale_u!(a,0); U = BCTuple(a.U,a.Δt,N)
     # predictor u → u'
     @log "p"
@@ -172,11 +176,11 @@ and the `AbstractPoisson` pressure solver to project the velocity onto an incomp
 end
 scale_u!(a,scale) = @loop a.u[Ii] *= scale over Ii ∈ inside_u(size(a.p))
 
-function CFL(a::Flow;Δt_max=10)
+function CFL(a::Flow;Δt_max=10)                                                #确定delta T的具体大小为多少，得到稳定的时间步长
     @inside a.σ[I] = flux_out(I,a.u)
     min(Δt_max,inv(maximum(a.σ)+5a.ν))
 end
-@fastmath @inline function flux_out(I::CartesianIndex{d},u) where {d}
+@fastmath @inline function flux_out(I::CartesianIndex{d},u) where {d}          #计算任意网格点的流出通量，用来帮忙计算cfl，即步长
     s = zero(eltype(u))
     for i in 1:d
         s += @inbounds(max(0.,u[I+δ(i,I),i])+max(0.,-u[I,i]))
