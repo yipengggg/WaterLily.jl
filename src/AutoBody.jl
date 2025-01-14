@@ -10,7 +10,7 @@ is composed automatically if `compose=true`, i.e. `sdf(x,t) = sdf(map(x,t),t)`.
 Both parameters remain independent otherwise. It can be particularly heplful to set
 `compose=false` when adding mulitple bodies together to create a more complex one.
 """
-struct AutoBody{F1<:Function,F2<:Function} <: AbstractBody
+struct AutoBody{F1<:Function,F2<:Function} <: AbstractBody                        # 这里定义了autobody这个数据类型，然后对应每一个autobody数据类型，我们要定义两个函数，一个是sdf函数，表示空间中的点到边界的距离，另一个是map函数
     sdf::F1
     map::F2
     function AutoBody(sdf, map=(x,t)->x; compose=true)
@@ -19,7 +19,7 @@ struct AutoBody{F1<:Function,F2<:Function} <: AbstractBody
     end
 end
 
-function Base.:+(a::AutoBody, b::AutoBody)
+function Base.:+(a::AutoBody, b::AutoBody)                                        #以下这三个函数均为描述一个两个几何体通过合并，消除，叠加，并集，补集等方式构建更复杂的几何体的方式
     map(x,t) = ifelse(a.sdf(x,t)<b.sdf(x,t),a.map(x,t),b.map(x,t))
     sdf(x,t) = min(a.sdf(x,t),b.sdf(x,t))
     AutoBody(sdf,map,compose=false)
